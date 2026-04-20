@@ -235,16 +235,22 @@ def readings_to_df(readings: List[Dict]):
     rows = []
     for rec in readings:
         try:
+            # 1. Change rec.get("ts") to rec.get("timestamp")
+            # 2. Convert Unix timestamp to datetime
+            raw_ts = rec.get("timestamp")
+            dt = pd.to_datetime(raw_ts, unit='s') if raw_ts else pd.to_datetime(rec.get("ts"))
+
             rows.append({
-                "date": pd.to_datetime(rec.get("ts")),  # FIXED (use ts)
-                "feed_kg": float(rec.get("weight", 0)),  # FIXED
-                "water_liters": float(rec.get("totalLiters", 0)),  # FIXED
+                "date": dt,
+                "feed_kg": float(rec.get("weight", 0)),
+                "water_liters": float(rec.get("totalLiters", 0)), # Matches your ESP32 data
                 "level": rec.get("level", "0%"),
                 "month": int(rec.get("month", 1)),
-                "day_of_week": pd.to_datetime(rec.get("ts")).weekday(),
+                "day_of_week": dt.weekday(),
                 "system": 1
             })
-        except Exception:
+        except Exception as e:
+            print(f"Skipping row due to error: {e}")
             continue
     if not rows:
         return pd.DataFrame()
