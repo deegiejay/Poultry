@@ -236,14 +236,13 @@ def readings_to_df(readings: List[Dict]):
     for rec in readings:
         try:
             rows.append({
-                "date":         pd.to_datetime(rec.get("ts") or rec.get("timestamp", 0)),
-                "feed_kg":      float(rec.get("weight",      0.0)),
-                "water_liters": float(rec.get("totalLiters", 0.0)),
-                "flow":         float(rec.get("flow",        0.0)),
-                "level":        str(rec.get("level",         "N/A")),
-                "day_of_week":  int(rec.get("dayOfWeek",     0)),
-                "month":        int(rec.get("month",         1)),
-                "system":       1,
+                "date": pd.to_datetime(rec.get("ts")),  # FIXED (use ts)
+                "feed_kg": float(rec.get("weight", 0)),  # FIXED
+                "water_liters": float(rec.get("totalLiters", 0)),  # FIXED
+                "level": rec.get("level", "0%"),
+                "month": int(rec.get("month", 1)),
+                "day_of_week": pd.to_datetime(rec.get("ts")).weekday(),
+                "system": 1
             })
         except Exception:
             continue
