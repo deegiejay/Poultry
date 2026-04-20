@@ -227,30 +227,25 @@ def push_alert(alert_type: str, message: str, value: float = 0.0) -> bool:
 # CONVERSION HELPER  (used by cloud server to build training DataFrame)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def readings_to_df(readings: List[Dict]):
-    """Convert Firebase readings list → pandas DataFrame for ML training."""
+def readings_to_df(readings):
     import pandas as pd
-    if not readings:
-        return pd.DataFrame()
+
     rows = []
+
     for rec in readings:
         try:
-            # 1. Change rec.get("ts") to rec.get("timestamp")
-            # 2. Convert Unix timestamp to datetime
-            raw_ts = rec.get("timestamp")
-            dt = pd.to_datetime(raw_ts, unit='s') if raw_ts else pd.to_datetime(rec.get("ts"))
-
             rows.append({
-                "date": dt,
-                "feed_kg": float(rec.get("weight", 0)),
-                "water_liters": float(rec.get("totalLiters", 0)), # Matches your ESP32 data
+                "date": pd.to_datetime(rec.get("ts")),   # from ESP32
+                "feed_kg": float(rec.get("weight", 0)),  # IMPORTANT FIX
+                "water_liters": float(rec.get("totalLiters", 0)),
+                "flow": float(rec.get("flow", 0)),
                 "level": rec.get("level", "0%"),
-                "month": int(rec.get("month", 1)),
-                "day_of_week": dt.weekday(),
+                "day_of_week": rec.get("dayOfWeek", 0),
+                "month": rec.get("month", 1),
                 "system": 1
             })
         except Exception as e:
-            print(f"Skipping row due to error: {e}")
+            print("SKIP ROW ERROR:", e)
             continue
     if not rows:
         return pd.DataFrame()
