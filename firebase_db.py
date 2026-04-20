@@ -31,7 +31,7 @@ from typing import Optional, List, Dict, Any
 # ══════════════════════════════════════════════════════════════════════════════
 # ▶▶  SET YOUR FIREBASE URL HERE  (same value in all 3 files)
 # ══════════════════════════════════════════════════════════════════════════════
-FIREBASE_URL = "https://poultry-ai-e901a-default-rtdb.firebaseio.com/"
+FIREBASE_URL = "https://poultry-ai-e901a-default-rtdb.firebaseio.com"
 # ══════════════════════════════════════════════════════════════════════════════
 
 TIMEOUT   = 6
@@ -235,8 +235,8 @@ def readings_to_df(readings):
     for rec in readings:
         try:
             rows.append({
-                "date": pd.to_datetime(rec.get("ts")),   # from ESP32
-                "feed_kg": float(rec.get("weight", 0)),  # IMPORTANT FIX
+                "date": pd.to_datetime(rec.get("timestamp"), unit='s'),  # Match "timestamp"
+                "feed_kg": float(rec.get("weight", 0)),  # Match "weight"
                 "water_liters": float(rec.get("totalLiters", 0)),
                 "flow": float(rec.get("flow", 0)),
                 "level": rec.get("level", "0%"),
