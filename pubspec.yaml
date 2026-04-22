@@ -1,0 +1,17 @@
+name: poultry_farm_ai
+description: Poultry Farm AI Dashboard
+
+publish_to: "none"
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flet: any
+
+flutter:
+  uses-material-design: true
