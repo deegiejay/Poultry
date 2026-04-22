@@ -1,23 +1,19 @@
 """
-cloud_ml_server.py  —  Cloud ML Engine (Deploy to Render / Railway)
-=====================================================================
-Runs 24/7. No laptop. Trains models. Writes results to Firebase.
-APK reads results — zero ML on phone.
+cloud_ml_server.py  —  Cloud ML Engine
+========================================
+CRITICAL FIX: When Render runs `uvicorn cloud_ml_server:app`, the
+`if __name__ == "__main__"` block NEVER runs, so the training thread
+was never started. Fixed by using FastAPI's `lifespan` context manager
+which runs on startup regardless of how uvicorn is invoked.
 
-DEPLOY TO RENDER (free tier):
-  1. Push these files to a GitHub repo:
-       cloud_ml_server.py, firebase_db.py, requirements.txt
-  2. render.com → New Web Service → connect repo
-  3. Build command:  pip install -r requirements.txt
-  4. Start command:  python cloud_ml_server.py
-  5. Environment vars → Add:
-       FIREBASE_URL = https://poultry-ai-e901a-default-rtdb.firebaseio.com
-  6. Deploy — done. Runs forever.
+ARCHIVE SYSTEM:
+  After each training cycle, /readings is checked. If count > ACTIVE_LIMIT,
+  oldest rows are moved to /archive automatically. ML trains on bounded
+  active window only — fast and scalable forever.
 
-RENDER FREE TIER NOTE:
-  Free services sleep after 15min of no HTTP traffic.
-  Add a free uptime monitor (e.g. UptimeRobot pinging /health every 5min)
-  to keep it awake 24/7.
+RENDER DEPLOY:
+  Start command: uvicorn cloud_ml_server:app --host 0.0.0.0 --port $PORT
+  Env var: FIREBASE_URL = https://poultry-ai-e901a-default-rtdb.firebaseio.com
 """
 
 import os
@@ -26,6 +22,7 @@ import time
 import threading
 import traceback
 import warnings
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Dict, Any
 
@@ -38,36 +35,32 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import uvicorn
 
-# ─── Import firebase_db and override URL from env BEFORE any DB calls ────────
-import firebase_db as _db
+# ─── Patch Firebase URL from env BEFORE any DB call ──────────────────────────
+import firebase_db as db
 
 _env_url = os.getenv("FIREBASE_URL", "").strip()
 if _env_url:
-    _db.FIREBASE_URL = _env_url          # patch module-level var; _base() reads it live
-    print(f"[CONFIG] Firebase URL from env: {_db.FIREBASE_URL}")
+    db.FIREBASE_URL = _env_url
+    print(f"[CONFIG] Firebase URL from env: {db.FIREBASE_URL}")
 else:
-    print(f"[CONFIG] Firebase URL from module: {_db.FIREBASE_URL}")
-
-# Use db as alias after patching
-db = _db
+    print(f"[CONFIG] Firebase URL from module: {db.FIREBASE_URL}")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # CONFIG
 # ═════════════════════════════════════════════════════════════════════════════
-RETRAIN_EVERY  = 50     # retrain when N new rows arrive
+RETRAIN_EVERY  = 50     # retrain when N new rows arrive since last train
 MIN_ROWS       = 20     # minimum rows before first train
-ROLLING_WINDOW = 1000   # use last N rows
-TRAIN_INTERVAL = 120    # retrain every N seconds even without new rows
-ANOMALY_Z      = 2.5    # Z-score threshold for anomaly detection
+ROLLING_WINDOW = 500    # use last N rows for training (matches ACTIVE_LIMIT)
+TRAIN_INTERVAL = 90     # also retrain every N seconds (shorter = faster first train)
+ANOMALY_Z      = 2.5
 
-# IMPORTANT: must match FEATURES list used during training
 FEATURES = [
     "water_liters", "system", "day_of_week", "month",
     "hour", "lag1_feed", "lag1_water", "roll3_feed",
 ]
 
 # ═════════════════════════════════════════════════════════════════════════════
-# IN-MEMORY STATE
+# STATE
 # ═════════════════════════════════════════════════════════════════════════════
 state: Dict[str, Any] = {
     "trained_rows": 0,
@@ -80,7 +73,7 @@ _event = threading.Event()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# ML ANALYSIS HELPERS
+# ANALYSIS HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
 
 def detect_anomaly(df: pd.DataFrame) -> Dict:
@@ -93,11 +86,9 @@ def detect_anomaly(df: pd.DataFrame) -> Dict:
             continue
         z = abs((vals.iloc[-1] - vals.mean()) / (vals.std() + 1e-9))
         if z > ANOMALY_Z:
-            result.update(
-                anomaly=True,
-                message=f"⚠️ {label} reading is {z:.1f}σ from normal ({vals.iloc[-1]:.3f})",
-                value=float(vals.iloc[-1]),
-            )
+            result.update(anomaly=True,
+                          message=f"⚠️ {label} is {z:.1f}σ from normal ({vals.iloc[-1]:.3f})",
+                          value=float(vals.iloc[-1]))
             return result
     return result
 
@@ -110,10 +101,9 @@ def analyze_trend(df: pd.DataFrame) -> Dict:
     prev = df.iloc[-40:-20]
     fd = (rec["feed_kg"].mean()      - prev["feed_kg"].mean())      / (prev["feed_kg"].mean()      + 1e-9) * 100
     wd = (rec["water_liters"].mean() - prev["water_liters"].mean()) / (prev["water_liters"].mean() + 1e-9) * 100
-    result["feedDelta"]  = round(fd, 1)
-    result["waterDelta"] = round(wd, 1)
+    result.update(feedDelta=round(fd, 1), waterDelta=round(wd, 1))
     if detect_anomaly(df)["anomaly"]:
-        result.update(trend="warning", icon="🚨")
+        result.update(trend="warning",    icon="🚨")
     elif abs(fd) < 5 and abs(wd) < 5:
         result.update(trend="stable",     icon="✅")
     elif fd > 5 or wd > 5:
@@ -142,11 +132,7 @@ def confidence_label(c: float) -> str:
 
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add engineered features to DataFrame.
-    Called once during training and once per prediction row.
-    Single source of truth — prevents train/predict feature mismatch.
-    """
+    """Single source of truth for feature engineering."""
     df = df.copy()
     df["hour"]       = pd.to_datetime(df["date"]).dt.hour
     df["lag1_feed"]  = df["feed_kg"].shift(1).fillna(df["feed_kg"].mean())
@@ -157,10 +143,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_predict_row(last_row: pd.Series, next_date: pd.Timestamp,
                       recent_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a single prediction input row with all FEATURES.
-    Uses last_row values for lag features.
-    """
+    """Build one prediction input row. Uses same FEATURES as training."""
     return pd.DataFrame([{
         "water_liters": float(last_row["water_liters"]),
         "system":       int(last_row.get("system", 1)),
@@ -174,27 +157,17 @@ def build_predict_row(last_row: pd.Series, next_date: pd.Timestamp,
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# MAIN TRAINING FUNCTION
+# TRAINING
 # ═════════════════════════════════════════════════════════════════════════════
 
 def train_once():
-    """
-    Full training cycle:
-      1. Load readings from Firebase
-      2. Feature engineering
-      3. Train GradientBoosting models (feed + water)
-      4. Run ARIMA
-      5. Detect anomaly + trend
-      6. Forecast 7 days
-      7. Write all results back to Firebase
-    """
     from sklearn.ensemble import GradientBoostingRegressor
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import Pipeline
 
     HAS_ARIMA = False
     try:
-        from statsmodels.tsa.arima.model import ARIMA
+        from statsmodels.tsa.arima.model import ARIMA as _A
         HAS_ARIMA = True
     except Exception:
         pass
@@ -206,8 +179,10 @@ def train_once():
     db.write_ml_status("training", state["trained_rows"])
 
     try:
-        # ── 1. Load data ──────────────────────────────────────────────────────
+        # 1. Load ─────────────────────────────────────────────────────────────
         readings = db.get_readings(limit=ROLLING_WINDOW)
+        print(f"[ML] Fetched {len(readings)} readings from Firebase")
+
         if not readings:
             db.write_ml_status("waiting", 0, "No data in Firebase yet")
             with _lock:
@@ -215,6 +190,8 @@ def train_once():
             return
 
         df = db.readings_to_df(readings)
+        print(f"[ML] DataFrame: {len(df)} rows, columns: {list(df.columns)}")
+
         if df.empty or len(df) < MIN_ROWS:
             msg = f"Need {MIN_ROWS} rows, have {len(df)}"
             db.write_ml_status("collecting", len(df), msg)
@@ -224,15 +201,14 @@ def train_once():
             return
 
         total_rows = len(df)
-        print(f"[ML] Training on {total_rows} rows…")
 
-        # ── 2. Feature engineering ────────────────────────────────────────────
+        # 2. Features ─────────────────────────────────────────────────────────
         df = add_features(df)
         X       = df[FEATURES].fillna(0)
         y_feed  = df["feed_kg"]
         y_water = df["water_liters"]
 
-        # ── 3. Train models ───────────────────────────────────────────────────
+        # 3. Train ────────────────────────────────────────────────────────────
         def make_pipe():
             return Pipeline([
                 ("sc", StandardScaler()),
@@ -240,72 +216,56 @@ def train_once():
                     n_estimators=100, max_depth=4, random_state=42)),
             ])
 
-        m_feed  = make_pipe()
-        m_water = make_pipe()
-        m_feed.fit(X, y_feed)
-        m_water.fit(X, y_water)
+        m_feed  = make_pipe(); m_feed.fit(X, y_feed)
+        m_water = make_pipe(); m_water.fit(X, y_water)
+        print(f"[ML] Models trained on {total_rows} rows")
 
-        # ── 4. Next-day prediction ────────────────────────────────────────────
+        # 4. Next-day prediction ──────────────────────────────────────────────
         last   = df.iloc[-1]
         nd     = pd.to_datetime(last["date"]) + timedelta(days=1)
         inp    = build_predict_row(last, nd, df)
         feed_v = round(float(m_feed.predict(inp)[0]),  3)
         water_v= round(float(m_water.predict(inp)[0]), 3)
 
-        # ── 5. ARIMA ──────────────────────────────────────────────────────────
-        arima_feed = arima_water = None
+        # 5. ARIMA ────────────────────────────────────────────────────────────
+        arima_feed = arima_water = feed_v
         if HAS_ARIMA and total_rows >= 30:
             try:
                 from statsmodels.tsa.arima.model import ARIMA
                 af = ARIMA(df["feed_kg"].values,      order=(2, 1, 2)).fit()
                 aw = ARIMA(df["water_liters"].values, order=(2, 1, 2)).fit()
-                arima_feed  = round(float(af.forecast(1)[0]),  3)
-                arima_water = round(float(aw.forecast(1)[0]),  3)
+                arima_feed  = round(float(af.forecast(1)[0]), 3)
+                arima_water = round(float(aw.forecast(1)[0]), 3)
             except Exception as e:
                 print(f"[ML] ARIMA skipped: {e}")
-                arima_feed  = feed_v
-                arima_water = water_v
-        else:
-            arima_feed  = feed_v
-            arima_water = water_v
 
-        # ── 6. Confidence / trend / anomaly ───────────────────────────────────
+        # 6. Analysis ─────────────────────────────────────────────────────────
         conf  = calc_confidence(df, total_rows)
         trend = analyze_trend(df)
         anom  = detect_anomaly(df)
 
-        # ── 7. 7-day forecast (consistent features) ───────────────────────────
+        # 7. 7-day forecast ───────────────────────────────────────────────────
         rows_7d = []
-        tmp     = df.copy()                # starts as engineered df
+        tmp = df.copy()
         for _ in range(7):
-            l_row = tmp.iloc[-1]
-            nd2   = pd.to_datetime(l_row["date"]) + timedelta(days=1)
-            xi    = build_predict_row(l_row, nd2, tmp)
-            fv    = float(m_feed.predict(xi)[0])
-            wv    = float(m_water.predict(xi)[0])
-            rows_7d.append({
-                "date":         str(nd2.date()),
-                "feed_kg":      round(fv, 4),
-                "water_liters": round(wv, 4),
-            })
-            # Append new row with engineered features for next iteration
+            l    = tmp.iloc[-1]
+            nd2  = pd.to_datetime(l["date"]) + timedelta(days=1)
+            xi   = build_predict_row(l, nd2, tmp)
+            fv   = float(m_feed.predict(xi)[0])
+            wv   = float(m_water.predict(xi)[0])
+            rows_7d.append({"date": str(nd2.date()),
+                            "feed_kg": round(fv, 4),
+                            "water_liters": round(wv, 4)})
             new_row = pd.DataFrame([{
-                "date":         nd2,
-                "feed_kg":      fv,
-                "water_liters": wv,
-                "system":       1,
-                "day_of_week":  nd2.weekday(),
-                "month":        nd2.month,
-                "hour":         0,
-                "lag1_feed":    l_row["feed_kg"],
-                "lag1_water":   l_row["water_liters"],
-                "roll3_feed":   float(tmp["feed_kg"].tail(3).mean()),
-                "flow":         0.0,
-                "level":        "0%",
+                "date": nd2, "feed_kg": fv, "water_liters": wv,
+                "system": 1, "day_of_week": nd2.weekday(), "month": nd2.month,
+                "hour": 0, "lag1_feed": l["feed_kg"], "lag1_water": l["water_liters"],
+                "roll3_feed": float(tmp["feed_kg"].tail(3).mean()),
+                "flow": 0.0, "level": "0%",
             }])
             tmp = pd.concat([tmp, new_row], ignore_index=True)
 
-        # ── 8. Patterns ───────────────────────────────────────────────────────
+        # 8. Patterns ─────────────────────────────────────────────────────────
         try:
             pat_sys   = df.groupby("system")[["feed_kg","water_liters"]].mean().to_dict()
             pat_day   = df.groupby("day_of_week")[["feed_kg","water_liters"]].mean().to_dict()
@@ -313,7 +273,7 @@ def train_once():
         except Exception:
             pat_sys = pat_day = pat_month = {}
 
-        # ── 9. Write to Firebase ──────────────────────────────────────────────
+        # 9. Write to Firebase ────────────────────────────────────────────────
         ml_result = {
             "feedKg":     feed_v,
             "waterL":     water_v,
@@ -343,16 +303,17 @@ def train_once():
             db.push_alert("anomaly", anom["message"], anom["value"])
 
         with _lock:
-            state.update(
-                trained_rows=total_rows,
-                training=False,
-                status="ready",
-                error="",
-            )
+            state.update(trained_rows=total_rows, training=False,
+                         status="ready", error="")
 
         print(f"[ML] ✅ feed={feed_v}kg water={water_v}L "
               f"conf={int(conf*100)}% trend={trend['trend']} "
-              f"firebase_write={'ok' if ok1 and ok2 else 'FAILED'}")
+              f"write={'ok' if ok1 and ok2 else 'FAILED'}")
+
+        # 10. Archive old readings ─────────────────────────────────────────────
+        archived = db.archive_old_readings()
+        if archived:
+            print(f"[ML] Archived {archived} old readings to /archive")
 
     except Exception as ex:
         err = str(ex)[:200]
@@ -364,15 +325,18 @@ def train_once():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# BACKGROUND TRAINING LOOP
+# TRAINING LOOP
 # ═════════════════════════════════════════════════════════════════════════════
 
 def training_loop():
     last_trained_rows = 0
-    print("[ML] Training loop started")
+    print("[ML] Training loop started — waiting for first interval…")
+
+    # Trigger immediately on startup
+    _event.set()
 
     while True:
-        triggered = _event.wait(timeout=TRAIN_INTERVAL)
+        _event.wait(timeout=TRAIN_INTERVAL)
         _event.clear()
         try:
             with _lock:
@@ -380,17 +344,20 @@ def training_loop():
                     continue
 
             current = db.get_reading_count()
+            print(f"[ML] Row count check: {current}")
 
             if current < MIN_ROWS:
-                db.write_ml_status("collecting", current,
-                                   f"Need {MIN_ROWS} rows, have {current}")
+                msg = f"Need {MIN_ROWS} rows, have {current}"
+                print(f"[ML] {msg}")
+                db.write_ml_status("collecting", current, msg)
                 with _lock:
                     state.update(status="collecting", trained_rows=current)
                 continue
 
             new_rows = current - last_trained_rows
             if new_rows < RETRAIN_EVERY and last_trained_rows > 0:
-                # Not enough new data — skip but update status
+                print(f"[ML] Only {new_rows} new rows since last train "
+                      f"(need {RETRAIN_EVERY}) — skipping")
                 continue
 
             train_once()
@@ -401,10 +368,31 @@ def training_loop():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# FASTAPI  — Render needs an HTTP server
+# FASTAPI  with lifespan  — THIS is the fix for Render
+# When Render runs `uvicorn cloud_ml_server:app`, __main__ is never called.
+# lifespan runs on startup regardless of how the app is invoked.
 # ═════════════════════════════════════════════════════════════════════════════
 
-app = FastAPI(title="Poultry Farm ML Server")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: launch training thread. Shutdown: nothing needed (daemon)."""
+    print("=" * 60)
+    print("  Poultry Farm Cloud ML Server — STARTUP")
+    print(f"  Firebase : {db.FIREBASE_URL}")
+    print(f"  Retrains : every {RETRAIN_EVERY} rows or {TRAIN_INTERVAL}s")
+    print(f"  Min rows : {MIN_ROWS}")
+    print("=" * 60)
+
+    t = threading.Thread(target=training_loop, daemon=True, name="ml-training")
+    t.start()
+    print(f"[STARTUP] Training thread started: {t.name}")
+
+    yield   # app runs here
+
+    print("[SHUTDOWN] ML server stopping")
+
+
+app = FastAPI(title="Poultry Farm ML Server", lifespan=lifespan)
 
 
 @app.get("/")
@@ -416,8 +404,13 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Ping this every 5min with UptimeRobot to keep Render free tier awake."""
-    return JSONResponse({"status": "ok", "ts": datetime.utcnow().isoformat()})
+    """UptimeRobot: ping this every 5min to keep Render free tier awake."""
+    return JSONResponse({
+        "status": "ok",
+        "ts":     datetime.utcnow().isoformat(),
+        "rows":   state.get("trained_rows", 0),
+        "ml":     state.get("status", "unknown"),
+    })
 
 
 @app.get("/status")
@@ -426,28 +419,28 @@ async def get_status():
         return JSONResponse(dict(state))
 
 
+@app.get("/count")
+async def get_count():
+    """Quick reading count check — useful for debugging."""
+    count = db.get_reading_count()
+    return JSONResponse({"readings": count, "firebase": db.FIREBASE_URL})
+
+
 @app.post("/retrain")
 async def force_retrain():
-    """POST to /retrain to manually trigger a training cycle."""
+    """POST to trigger immediate retrain — useful after deploy."""
     _event.set()
     return JSONResponse({"message": "Retrain triggered"})
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
+# LOCAL RUN  (python cloud_ml_server.py)
 # ═════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  Poultry Farm Cloud ML Server")
-    print(f"  Firebase : {db.FIREBASE_URL}")
-    print(f"  Retrains : every {RETRAIN_EVERY} rows or {TRAIN_INTERVAL}s")
-    print(f"  Min rows : {MIN_ROWS}")
-    print("=" * 60)
-
-    # Start training background thread
-    threading.Thread(target=training_loop, daemon=True).start()
-
-    # Render injects PORT env var; default 8000 for local testing
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(
+        "cloud_ml_server:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+    )
