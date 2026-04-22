@@ -273,7 +273,60 @@ def train_once():
         except Exception:
             pat_sys = pat_day = pat_month = {}
 
-        # 9. Write to Firebase ────────────────────────────────────────────────
+        # 9. Render chart (server has matplotlib — APK does not)
+        chart_b64 = ""
+        try:
+            import io, base64
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+
+            fig, ax = plt.subplots(figsize=(13, 4.6), facecolor="#0e1117")
+            ax.set_facecolor("#0e1117")
+            dates_hist = pd.to_datetime(df["date"])
+            ax.plot(dates_hist, df["feed_kg"],
+                    color="#50C8FF", lw=2.2, label="Feed/Weight", marker="o", ms=3)
+            ax.plot(dates_hist, df["water_liters"],
+                    color="#1f77b4", lw=2.2, label="Water (L)", marker="o", ms=3)
+            # Overlay 7-day forecast
+            if rows_7d:
+                import datetime as _dt
+                fc_dates = [_dt.datetime.strptime(r["date"], "%Y-%m-%d") for r in rows_7d]
+                fc_feed  = [r["feed_kg"]      for r in rows_7d]
+                fc_water = [r["water_liters"] for r in rows_7d]
+                ax.axvline(x=dates_hist.iloc[-1], color="#3d4257", lw=1, ls="--", alpha=0.5)
+                ax.plot(fc_dates, fc_feed,  color="#50C8FF", lw=1.8, ls="--",
+                        alpha=0.7, label="Feed Forecast")
+                ax.plot(fc_dates, fc_water, color="#1f77b4", lw=1.8, ls="--",
+                        alpha=0.7, label="Water Forecast")
+            n = len(df)
+            if n <= 48:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+            else:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+                ax.xaxis.set_major_locator(mdates.DayLocator())
+            plt.xticks(rotation=28, color="#a0aec0", fontsize=9, ha="right")
+            plt.yticks(color="#a0aec0", fontsize=10)
+            ax.tick_params(colors="#a0aec0")
+            ax.grid(axis="y", color="#3d4257", lw=0.6, ls="--", alpha=0.7)
+            ax.grid(axis="x", color="#3d4257", lw=0.3, ls=":", alpha=0.4)
+            for sp in ax.spines.values(): sp.set_visible(False)
+            ax.legend(loc="upper left", bbox_to_anchor=(0, -0.26),
+                      ncol=2, frameon=False, labelcolor="#a0aec0", fontsize=10)
+            ax.set_title(f"Last {total_rows} readings + 7-day forecast",
+                         color="#a0aec0", fontsize=11, pad=8)
+            plt.tight_layout(pad=1.8)
+            buf = io.BytesIO()
+            plt.savefig(buf, format="png", bbox_inches="tight",
+                        dpi=130, facecolor="#0e1117")
+            plt.close(fig)
+            chart_b64 = base64.b64encode(buf.getvalue()).decode()
+            print(f"[ML] Chart rendered ({len(chart_b64)//1024}KB)")
+        except Exception as ce:
+            print(f"[ML] Chart render skipped: {ce}")
+
+        # 10. Write to Firebase ────────────────────────────────────────────────
         ml_result = {
             "feedKg":     feed_v,
             "waterL":     water_v,
@@ -293,6 +346,7 @@ def train_once():
             "patSystem":  pat_sys,
             "patDay":     pat_day,
             "patMonth":   pat_month,
+            "chartB64":   chart_b64,   # rendered chart for APK display
         }
 
         ok1 = db.write_ml_result(ml_result)
@@ -310,7 +364,7 @@ def train_once():
               f"conf={int(conf*100)}% trend={trend['trend']} "
               f"write={'ok' if ok1 and ok2 else 'FAILED'}")
 
-        # 10. Archive old readings ─────────────────────────────────────────────
+        # 11. Archive old readings ─────────────────────────────────────────────
         archived = db.archive_old_readings()
         if archived:
             print(f"[ML] Archived {archived} old readings to /archive")
