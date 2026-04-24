@@ -787,6 +787,7 @@ def main(page: ft.Page):
 
                 # ── Cloud ML result ───────────────────────────────────────────
                 ml       = db.get_ml_result()
+                print("Chart Exists:", bool(ml.get("chartB64")))
                 ml_stat  = db.get_ml_status()
 
                 # ML status banner label
@@ -912,16 +913,12 @@ def main(page: ft.Page):
                 # Chart image from Cloud ML result only
                 # Chart image from Cloud ML result only
                 if ml:
-                    chart_b64 = ml.get("chartB64", "")
-
-                    if chart_b64:
-                        chart_img.src_base64 = chart_b64
-                        chart_cap.value = "Rendered by Cloud ML"
+                    chart_data = ml.get("chartB64", "")
+                    if chart_data and len(chart_data) > 100:
+                        chart_img.src_base64 = chart_data
+                        chart_sec.visible = True
                     else:
-                        chart_cap.value = "Waiting for Cloud ML chart..."
-                        chart_img.src_base64 = ""
-
-                    chart_sec.visible = True
+                        chart_sec.visible = False
 
                 su()
 
