@@ -34,8 +34,8 @@ from typing import Optional, List, Dict, Any
 FIREBASE_URL = "https://poultry-ai-e901a-default-rtdb.firebaseio.com"
 # ══════════════════════════════════════════════════════════════════════════════
 
-TIMEOUT   = 10
-CACHE_TTL = 10   # seconds before re-fetching readings
+TIMEOUT   = 3
+CACHE_TTL = 8   # seconds before re-fetching readings
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OFFLINE CACHE
@@ -46,6 +46,7 @@ _cache: Dict[str, Any] = {
     "ml_result":   None,
     "forecast_7d": None,
     "last_fetch":  0,
+    "readings_limit": 0,
     "online":      False,
 }
 _lock = threading.Lock()
@@ -130,8 +131,12 @@ def get_readings(limit: int = 300):
     with _lock:
         cached = _cache["readings"]
         last_f = _cache["last_fetch"]
-    if cached and (now - last_f) < CACHE_TTL:
-        return cached
+        cached_limit = int(_cache.get("readings_limit", 0) or 0)
+
+    # Only use cache if it was fetched with at least the requested limit.
+    # This prevents a small mobile query from breaking total count.
+    if cached and (now - last_f) < CACHE_TTL and cached_limit >= limit:
+        return cached[-limit:] if len(cached) > limit else cached
 
     # Try ordered query first
     raw = _get("readings", f'?orderBy="timestamp"&limitToLast={limit}')
@@ -147,8 +152,9 @@ def get_readings(limit: int = 300):
         if len(readings) > limit:
             readings = readings[-limit:]
         with _lock:
-            _cache["readings"]   = readings
+            _cache["readings"] = readings
             _cache["last_fetch"] = now
+            _cache["readings_limit"] = limit
         return readings
 
     with _lock:
@@ -314,3 +320,11 @@ def readings_to_df(readings: List[Dict]):
         pass
 
     return df
+
+def get_cached_reading_count() -> int:
+    """Fast count from currently cached readings. Does not call Firebase."""
+    try:
+        with _lock:
+            return len(_cache.get("readings", []) or [])
+    except Exception:
+        return 0
