@@ -911,14 +911,18 @@ def main(page: ft.Page):
                     threading.Thread(target=refresh_db, daemon=True).start()
 
                 # Chart image from Cloud ML result only
-                # Chart image from Cloud ML result only
                 if ml:
-                    chart_data = ml.get("chartB64", "")
-                    if chart_data and len(chart_data) > 100:
-                        chart_img.src_base64 = chart_data
-                        chart_sec.visible = True
+                    chart_b64 = ml.get("chartB64", "")
+
+                    if chart_b64 and len(chart_b64) > 100:
+                        chart_img.src_base64 = chart_b64
+                        chart_img.visible = True
+                        chart_cap.value = "Rendered by Cloud ML"
                     else:
-                        chart_sec.visible = False
+                        chart_img.visible = False
+                        chart_cap.value = "Waiting for Cloud ML chart..."
+
+                    chart_sec.visible = True
 
                 su()
 
