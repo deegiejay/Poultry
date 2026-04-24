@@ -22,6 +22,7 @@ Firebase structure:
 """
 
 import requests
+SESSION = requests.Session()
 import time
 import threading
 from datetime import datetime
@@ -33,8 +34,8 @@ from typing import Optional, List, Dict, Any
 FIREBASE_URL = "https://poultry-ai-e901a-default-rtdb.firebaseio.com"
 # ══════════════════════════════════════════════════════════════════════════════
 
-TIMEOUT   = 6
-CACHE_TTL = 20   # seconds before re-fetching readings
+TIMEOUT   = 10
+CACHE_TTL = 10   # seconds before re-fetching readings
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OFFLINE CACHE
@@ -68,8 +69,8 @@ def _get(path: str, params: str = "") -> Optional[Any]:
     """GET from Firebase. Returns parsed JSON or None on error."""
     try:
         url = f"{_base()}/{path}.json{params}"
-        r   = requests.get(url, timeout=TIMEOUT)
-        if r.status_code == 200:
+        r = SESSION.get(url, timeout=TIMEOUT)
+        if r.ok:
             with _lock:
                 _cache["online"] = True
             return r.json()
@@ -83,8 +84,8 @@ def _get(path: str, params: str = "") -> Optional[Any]:
 def _put(path: str, payload: dict) -> bool:
     """PUT (overwrite) a Firebase node."""
     try:
-        r = requests.put(f"{_base()}/{path}.json", json=payload, timeout=TIMEOUT)
-        return r.status_code == 200
+        r = SESSION.put(url, json=payload, timeout=TIMEOUT)
+        return r.ok
     except Exception:
         return False
 
@@ -92,8 +93,8 @@ def _put(path: str, payload: dict) -> bool:
 def _post(path: str, payload: dict) -> bool:
     """POST (append child) to a Firebase node."""
     try:
-        r = requests.post(f"{_base()}/{path}.json", json=payload, timeout=TIMEOUT)
-        return r.status_code == 200
+        r = SESSION.post(url, json=payload, timeout=TIMEOUT)
+        return r.ok
     except Exception:
         return False
 
@@ -113,7 +114,7 @@ def get_latest() -> Optional[Dict]:
         return _cache.get("latest")
 
 
-def get_readings(limit: int = 1000) -> List[Dict]:
+def get_readings(limit: int = 300):
     """
     Fetch last N readings from /readings ordered by timestamp.
     Cached for CACHE_TTL seconds.
@@ -166,6 +167,8 @@ def get_ml_result() -> Optional[Dict]:
     """
     data = _get("ml_result")
     if data:
+        if "chartB64" not in data:
+            data["chartB64"] = ""
         with _lock:
             _cache["ml_result"] = data
         return data
@@ -209,6 +212,7 @@ def get_cache_status() -> Dict:
             "cached_rows": len(_cache["readings"]),
             "has_latest":  _cache["latest"] is not None,
             "has_ml":      _cache["ml_result"] is not None,
+            "last_fetch": _cache["last_fetch"],
         }
 
 
@@ -282,9 +286,9 @@ def readings_to_df(readings: List[Dict]):
 
             rows.append({
                 "date":         date,
-                "feed_kg":      float(rec.get("weight",       0.0)),
-                "water_liters": float(rec.get("totalLiters",  0.0)),
-                "flow":         float(rec.get("flow",         0.0)),
+                "feed_kg": float(rec.get("weight") or 0),
+                "water_liters": float(rec.get("totalLiters") or 0),
+                "flow": float(rec.get("flow") or 0),
                 "level":        str(rec.get("level",          "0%")),
                 "day_of_week":  int(rec.get("dayOfWeek",      0)),
                 "month":        int(rec.get("month",          1)),
