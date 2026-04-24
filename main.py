@@ -787,7 +787,7 @@ def main(page: ft.Page):
 
                 # ── Cloud ML result ───────────────────────────────────────────
                 ml       = db.get_ml_result()
-                print("Chart Exists:", bool(ml.get("chartB64")))
+                print("Chart Exists:", bool((ml or {}).get("chartB64")))
                 ml_stat  = db.get_ml_status()
 
                 # ML status banner label
@@ -908,6 +908,7 @@ def main(page: ft.Page):
                 # DB table refresh every 15s
                 if now - last_db > 30:
                     last_db = now
+                    threading.Thread(target=live_loop, daemon=True).start()
                     threading.Thread(target=refresh_db, daemon=True).start()
 
                 # Chart image from Cloud ML result only
@@ -931,7 +932,6 @@ def main(page: ft.Page):
 
             time.sleep(10)
 
-    threading.Thread(target=live_loop, daemon=True).start()
     page.on_disconnect = lambda e: S.update(running=False)
 
     # Initial layout build
@@ -959,7 +959,7 @@ def main(page: ft.Page):
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
-# APK mode:     flet build apk  → ft.app(target=main) with no args
+# APK mode:     flet build apk  → native ft.app(target=main), NOT web browser mode
 # Browser mode: python fletapp.py --web
 # Desktop mode: python fletapp.py
 # ═════════════════════════════════════════════════════════════════════════════
@@ -982,10 +982,5 @@ if __name__ == "__main__":
         ft.app(target=main, view=ft.AppView.WEB_BROWSER,
                port=PORT, host="0.0.0.0")
     else:
-        print("🌐 Running web mode by default\n")
-        ft.app(
-            target=main,
-            view=ft.AppView.WEB_BROWSER,
-            port=8550,
-            host="0.0.0.0"
-        )
+        print("📱 Running native app mode")
+        ft.app(target=main)
