@@ -2,14 +2,14 @@
 name = "poultry_farm_ai"
 version = "1.0.0"
 dependencies = [
-  "flet",
+  "flet==0.28.3",
   "requests",
 ]
 
 [tool.flet]
 name = "Poultry Farm AI"
 org = "com.poultry.farm"
-product = "poultry_farm_ai"
+product = "poultry farm ai"
 description = "Poultry Farm AI Dashboard - ESP32 to Firebase to Cloud ML"
 version = "1.0.0"
 
