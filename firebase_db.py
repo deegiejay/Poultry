@@ -84,18 +84,22 @@ def _get(path: str, params: str = "") -> Optional[Any]:
 def _put(path: str, payload: dict) -> bool:
     """PUT (overwrite) a Firebase node."""
     try:
+        url = f"{_base()}/{path}.json"
         r = SESSION.put(url, json=payload, timeout=TIMEOUT)
         return r.ok
-    except Exception:
+    except Exception as e:
+        print(f"[DB PUT ERROR] {path}: {e}")
         return False
 
 
 def _post(path: str, payload: dict) -> bool:
     """POST (append child) to a Firebase node."""
     try:
+        url = f"{_base()}/{path}.json"
         r = SESSION.post(url, json=payload, timeout=TIMEOUT)
         return r.ok
-    except Exception:
+    except Exception as e:
+        print(f"[DB POST ERROR] {path}: {e}")
         return False
 
 
