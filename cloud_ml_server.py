@@ -31,6 +31,13 @@ from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
+import io
+import base64
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 warnings.filterwarnings("ignore")
 
@@ -59,6 +66,12 @@ MIN_ROWS       = 20     # minimum rows before first train
 ROLLING_WINDOW = 1000   # use last N rows
 TRAIN_INTERVAL = 120    # retrain every N seconds even without new rows
 ANOMALY_Z      = 2.5    # Z-score threshold for anomaly detection
+
+BG      = "#0e1117"
+BORDER  = "#3d4257"
+MUTED   = "#a0aec0"
+CFEED   = "#50C8FF"
+CWATER  = "#1f77b4"
 
 # IMPORTANT: must match FEATURES list used during training
 FEATURES = [
@@ -172,7 +185,113 @@ def build_predict_row(last_row: pd.Series, next_date: pd.Timestamp,
         "roll3_feed":   float(recent_df["feed_kg"].tail(3).mean()),
     }])
 
+def render_chart_b64(df: pd.DataFrame, forecast_rows: list = None) -> str:
+    """
+    Render feed vs water chart as base64 PNG.
+    Cloud server generates this; APK only displays it.
+    """
+    try:
+        if df.empty:
+            return ""
 
+        plot_df = df.tail(200).copy()
+
+        fig, ax = plt.subplots(figsize=(9, 4), facecolor=BG)
+        ax.set_facecolor(BG)
+
+        ax.plot(
+            plot_df["date"],
+            plot_df["feed_kg"],
+            color=CFEED,
+            lw=2.0,
+            marker="o",
+            ms=3,
+            label="Feed / Weight",
+        )
+
+        ax.plot(
+            plot_df["date"],
+            plot_df["water_liters"],
+            color=CWATER,
+            lw=2.0,
+            marker="o",
+            ms=3,
+            label="Water (L)",
+        )
+
+        if forecast_rows:
+            try:
+                fdf = pd.DataFrame(forecast_rows)
+                fdf["date"] = pd.to_datetime(fdf["date"])
+
+                ax.axvline(
+                    x=plot_df["date"].iloc[-1],
+                    color=BORDER,
+                    lw=1,
+                    ls="--",
+                    alpha=0.5,
+                )
+
+                ax.plot(
+                    fdf["date"],
+                    fdf["feed_kg"],
+                    color=CFEED,
+                    lw=1.8,
+                    ls="--",
+                    alpha=0.8,
+                    label="Feed Forecast",
+                )
+
+                ax.plot(
+                    fdf["date"],
+                    fdf["water_liters"],
+                    color=CWATER,
+                    lw=1.8,
+                    ls="--",
+                    alpha=0.8,
+                    label="Water Forecast",
+                )
+            except Exception as e:
+                print(f"[CHART] forecast skipped: {e}")
+
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d"))
+        plt.xticks(rotation=25, color=MUTED, fontsize=8, ha="right")
+        plt.yticks(color=MUTED, fontsize=9)
+
+        ax.tick_params(colors=MUTED)
+        ax.grid(axis="y", color=BORDER, lw=0.6, ls="--", alpha=0.7)
+
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=2,
+            frameon=False,
+            labelcolor=MUTED,
+            fontsize=8,
+        )
+
+        ax.set_title("Consumption Trends", color=MUTED, fontsize=11, pad=8)
+
+        plt.tight_layout(pad=1.5)
+
+        buf = io.BytesIO()
+        plt.savefig(
+            buf,
+            format="png",
+            bbox_inches="tight",
+            dpi=140,
+            facecolor=BG,
+        )
+        plt.close(fig)
+
+        return base64.b64encode(buf.getvalue()).decode()
+
+    except Exception as e:
+        print(f"[CHART] error: {e}")
+        return ""
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN TRAINING FUNCTION
 # ═════════════════════════════════════════════════════════════════════════════
@@ -313,6 +432,8 @@ def train_once():
         except Exception:
             pat_sys = pat_day = pat_month = {}
 
+
+        chart_b64 = render_chart_b64(df, rows_7d)
         # ── 9. Write to Firebase ──────────────────────────────────────────────
         ml_result = {
             "feedKg":     feed_v,
@@ -333,6 +454,7 @@ def train_once():
             "patSystem":  pat_sys,
             "patDay":     pat_day,
             "patMonth":   pat_month,
+            "chartB64":   chart_b64,
         }
 
         ok1 = db.write_ml_result(ml_result)
