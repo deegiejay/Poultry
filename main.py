@@ -1,4 +1,4 @@
-﻿"""
+"""
 fletapp.py  —  Poultry Farm AI Dashboard  (APK / Browser)
 ===========================================================
 PURE UI — Zero ML on device.
@@ -124,7 +124,7 @@ def mk_table_list(rows, idx=False):
     for k in keys:
         cols.append(
             ft.DataColumn(
-                ft.Text(str(k), weight=ft.FontWeight.W_600, color=MUTED, size=12)
+                ft.Text(str(k), weight=ft.FontWeight.W_600, color=MUTED, size=11)
             )
         )
 
@@ -137,7 +137,7 @@ def mk_table_list(rows, idx=False):
 
         for k in keys:
             cells.append(
-                ft.DataCell(ft.Text(safe_s(row.get(k)), size=12, color=TEXT))
+                ft.DataCell(ft.Text(safe_s(row.get(k)), size=11, color=TEXT))
             )
 
         data_rows.append(
@@ -158,26 +158,70 @@ def mk_table_list(rows, idx=False):
 
 
 def ins_block(title, emoji, data_dict):
-    """Render pattern dict from Firebase as a table."""
+    """Render pattern dict/list from Firebase without pandas."""
     if not data_dict:
         return ft.Container()
+
+    rows = []
+
     try:
-        df = pd.DataFrame(data_dict)
-        df.index.name = df.index.name or "group"
-        df = df.reset_index()
-    except Exception:
-        return ft.Container()
+        # CASE 1: {"feed_kg": {"4": 0.2137}, "water_liters": {"4": 0}}
+        has_nested_dict = any(isinstance(v, dict) for v in data_dict.values())
+
+        if has_nested_dict:
+            keys = set()
+            for col_data in data_dict.values():
+                if isinstance(col_data, dict):
+                    keys.update([str(k) for k in col_data.keys()])
+
+            for key in sorted(keys):
+                row = {"group": key}
+                for col_name, col_data in data_dict.items():
+                    if isinstance(col_data, dict):
+                        val = col_data.get(key, col_data.get(str(key), "--"))
+                        row[col_name] = val
+                rows.append(row)
+
+        # CASE 2: {"feed_kg": [None, 0.21367], "water_liters": [None, 0.0]}
+        else:
+            max_len = 0
+            for v in data_dict.values():
+                if isinstance(v, list):
+                    max_len = max(max_len, len(v))
+
+            if max_len > 0:
+                for i in range(max_len):
+                    row = {"group": i}
+                    for col_name, values in data_dict.items():
+                        if isinstance(values, list):
+                            val = values[i] if i < len(values) else "--"
+                            if val is not None:
+                                row[col_name] = val
+                    if len(row) > 1:
+                        rows.append(row)
+            else:
+                for k, v in data_dict.items():
+                    rows.append({"name": k, "value": v})
+
+    except Exception as e:
+        rows = [{"error": str(e)}]
+
     return ft.Column([
-        ft.Row([ft.Text(emoji, size=15),
-                ft.Text(title, size=15, weight=ft.FontWeight.W_600, color=TEXT)],
-               spacing=6),
+        ft.Row([
+            ft.Text(emoji, size=15),
+            ft.Text(title, size=15, weight=ft.FontWeight.W_600, color=TEXT),
+        ], spacing=6),
+
         ft.Container(
             content=ft.Row(
-                [mk_table(df)],
+                [mk_table_list(rows)],
                 scroll=ft.ScrollMode.AUTO
             ),
-                     border_radius=8, border=ft.border.all(1, BORDER),
-                     bgcolor=SURF2, padding=6),
+            border_radius=8,
+            border=ft.border.all(1, BORDER),
+            bgcolor=SURF2,
+            padding=6,
+        ),
     ], spacing=6)
 
 
@@ -209,9 +253,9 @@ def make_card_row(items, page_width, cols=4, gap=12):
     SAFE for Flet desktop / browser / Android APK.
     Does NOT use wrap=True or expand=True (avoids grey-box bug).
     """
-    if page_width < 500:
+    if page_width < 850:
         cols = 1
-    elif page_width < 900:
+    elif page_width < 1100:
         cols = 2
     else:
         cols = 4
@@ -221,10 +265,19 @@ def make_card_row(items, page_width, cols=4, gap=12):
     for label, ctrl in items:
         row.append(ft.Container(
             content=ft.Column(
-                [ft.Text(label, size=12, color=MUTED), ctrl],
+                [
+                    ft.Text(
+                        label,
+                        size=11 if page_width < 850 else 12,
+                        color=MUTED,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    ctrl
+                ],
                 spacing=5, tight=True),
             bgcolor=SURFACE,
-            padding=ft.padding.all(18),
+            padding=ft.padding.all(12 if page_width < 850 else 18),
             border_radius=8,
             border=ft.border.all(1, BORDER),
             width=cw,
@@ -248,36 +301,40 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor    = BG
     page.padding = ft.padding.symmetric(
-        horizontal=12 if is_mobile_width(page.width or 1280) else 28,
-        vertical=12 if is_mobile_width(page.width or 1280) else 24
+        horizontal=8 if is_mobile_width(page.width or 1280) else 28,
+        vertical=10 if is_mobile_width(page.width or 1280) else 24
     )
     page.scroll     = ft.ScrollMode.AUTO
     try:
-        page.window.width     = 1280
         page.window.min_width = 380
-        page.window.height    = 900
+        page.window.height = 900
     except Exception:
-        try:
-            page.window_width = 1280
-        except Exception:
-            pass
+        pass
 
     S = {"running": True, "no_flow": None}
+    update_lock = threading.Lock()
 
     def su():
         try:
-            page.update()
-        except Exception:
-            pass
+            with update_lock:
+                page.update()
+        except Exception as e:
+            print("PAGE UPDATE ERROR:", e)
 
     def pw():
         try:
-            return max(380, page.window.width or 1280)
+            if page.width:
+                return max(320, page.width)
         except Exception:
-            try:
-                return max(380, page.width or 1280)
-            except Exception:
-                return 1280
+            pass
+
+        try:
+            if page.window.width:
+                return max(320, page.window.width)
+        except Exception:
+            pass
+
+        return 380
 
     def is_mobile():
         return pw() < 850
@@ -309,7 +366,10 @@ def main(page: ft.Page):
             ], spacing=5),
         ], spacing=6),
         bgcolor=SURF2,
-        padding=ft.padding.symmetric(horizontal=18, vertical=14),
+        padding=ft.padding.symmetric(
+            horizontal=10 if is_mobile() else 18,
+            vertical=10 if is_mobile() else 14
+        ),
         border_radius=8,
         border=ft.border.all(1, GREEN + "44"),
     )
@@ -394,7 +454,7 @@ def main(page: ft.Page):
         ai_card,
         al_bx,
         v_ls,
-    ], spacing=14)
+    ], spacing=10 if is_mobile() else 14)
 
     # ══════════════════════════════════════════════════════════════════════════
     # SECTION 2 — TITLE
@@ -445,7 +505,7 @@ def main(page: ft.Page):
                 )
             )
         db_cnt2.value = f"{db.get_reading_count():,} total readings"
-        su()
+        # su()
 
     db_ref = ft.IconButton(
         ICO_REFRESH, icon_color=MUTED, tooltip="Refresh",
@@ -466,7 +526,7 @@ def main(page: ft.Page):
 
         ft.Container(
             content=db_col,
-            height=220 if is_mobile() else 320,
+            height=200 if is_mobile() else 320,
             border_radius=8,
             border=ft.border.all(1, BORDER),
             bgcolor=SURF2,
@@ -491,7 +551,7 @@ def main(page: ft.Page):
 
     arima_sec = ft.Column([
         divider(),
-        hdr("🔮", "Forecast (ARIMA / Time Series)", "From cloud ML server"),
+        hdr("🔮", "Forecast" if is_mobile() else "Forecast (ARIMA / Time Series)", "From cloud ML server"),
         arima_ctr,
         ar_info,
     ], spacing=12, visible=False)
@@ -524,7 +584,11 @@ def main(page: ft.Page):
 
     ai_pred_sec = ft.Column([
         divider(),
-        hdr("🤖", "AI Predictions", "Computed by cloud ML — updated continuously"),
+        hdr(
+            "🤖",
+            "AI Predictions",
+            "Cloud ML results" if is_mobile() else "Computed by cloud ML — updated continuously"
+        ),
         ai_sb, pred_ctr, pd_bx, conf_col,
     ], spacing=13, visible=False)
 
@@ -547,7 +611,11 @@ def main(page: ft.Page):
     )
     fc7_sec = ft.Column([
         divider(),
-        hdr("📅", "7-Day Forecast", "Auto-updated by cloud ML after each retrain"),
+        hdr(
+            "📅",
+            "7-Day Forecast",
+            "Cloud ML forecast" if is_mobile() else "Auto-updated by cloud ML after each retrain"
+        ),
         fc7_wrap,
     ], spacing=13, visible=False)
 
@@ -555,11 +623,10 @@ def main(page: ft.Page):
     # SECTION 8 — CONSUMPTION TRENDS CHART
     # ══════════════════════════════════════════════════════════════════════════
     chart_img = ft.Image(
-        src="",
+        src_base64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0d8AAAAASUVORK5CYII=",
         fit="contain",
         border_radius=8,
-        width=pw() - 36 if is_mobile() else pw() - 120,
-        height=230 if is_mobile() else 420,
+        height=240 if is_mobile() else 360,
     )
 
     chart_cap = ft.Text(
@@ -596,13 +663,24 @@ def main(page: ft.Page):
         chart_cap,
 
         ft.Container(
-            content=chart_img,
+            content=ft.Column(
+                [
+                    chart_img,
+                    ft.Text(
+                        "Chart appears after Render creates chartB64",
+                        size=10,
+                        color=MUTED,
+                        visible=True,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             bgcolor=SURF2,
             border_radius=10,
             border=ft.border.all(1, BORDER),
             padding=ft.padding.symmetric(
-                horizontal=6 if is_mobile() else 12,
-                vertical=8 if is_mobile() else 12,
+                horizontal=2 if is_mobile() else 12,
+                vertical=4 if is_mobile() else 12,
             ),
             alignment=ft.alignment.center,
         ),
@@ -617,15 +695,9 @@ def main(page: ft.Page):
         rebuild_arima()
         rebuild_pred()
 
-        try:
-            chart_img.width = pw() - 36 if is_mobile() else pw() - 120
-            chart_img.height = 230 if is_mobile() else 420
-        except Exception:
-            pass
-
         su()
 
-    page.on_resized = on_resize
+    # page.on_resized = on_resize
 
     # ══════════════════════════════════════════════════════════════════════════
     # LIVE UPDATE LOOP — polls Firebase every 3s
@@ -833,24 +905,30 @@ def main(page: ft.Page):
                         pass
 
                 # DB table refresh every 15s
-                if now - last_db > 15:
+                if now - last_db > 30:
                     last_db = now
                     threading.Thread(target=refresh_db, daemon=True).start()
 
                 # Chart image from Cloud ML result only
+                # Chart image from Cloud ML result only
                 if ml:
                     chart_b64 = ml.get("chartB64", "")
+
                     if chart_b64:
                         chart_img.src_base64 = chart_b64
                         chart_cap.value = "Rendered by Cloud ML"
-                        chart_sec.visible = True
+                    else:
+                        chart_cap.value = "Waiting for Cloud ML chart..."
+                        chart_img.src_base64 = ""
+
+                    chart_sec.visible = True
 
                 su()
 
             except Exception:
                 print(traceback.format_exc())
 
-            time.sleep(3)
+            time.sleep(10)
 
     threading.Thread(target=live_loop, daemon=True).start()
     page.on_disconnect = lambda e: S.update(running=False)
@@ -903,5 +981,10 @@ if __name__ == "__main__":
         ft.app(target=main, view=ft.AppView.WEB_BROWSER,
                port=PORT, host="0.0.0.0")
     else:
-        print("🖥  Desktop / APK mode  (add --web for browser)\n")
-        ft.app(target=main)
+        print("🌐 Running web mode by default\n")
+        ft.app(
+            target=main,
+            view=ft.AppView.WEB_BROWSER,
+            port=8550,
+            host="0.0.0.0"
+        )
