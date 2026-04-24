@@ -1,4 +1,4 @@
-﻿"""
+"""
 fletapp.py  —  Poultry Farm AI Dashboard  (APK / Browser)
 ===========================================================
 PURE UI — Zero ML on device.
@@ -74,7 +74,9 @@ CWATER  = "#1f77b4"
 PHONE_MAX_WIDTH = 430
 PHONE_SIDE_PAD = 10
 PHONE_GAP = 10
-PHONE_TOP_SAFE = 32
+PHONE_TOP_SAFE = 40
+CHART_PHONE_HEIGHT = 370
+CHART_DESKTOP_HEIGHT = 460
 LIVE_POLL_SECONDS = 2
 DB_REFRESH_SECONDS = 30
 ML_REFRESH_SECONDS = 15
@@ -277,7 +279,6 @@ def make_card_row(items, page_width, cols=4, gap=12):
     """
     Mobile-first metric cards.
     On phones, each card uses full available width to avoid overflow.
-    On tablets/desktop, cards use 2 or 4 columns.
     """
     try:
         page_width = int(page_width or 380)
@@ -289,8 +290,7 @@ def make_card_row(items, page_width, cols=4, gap=12):
     if mobile:
         cols = 1
         gap = PHONE_GAP
-        # Account for page padding + borders. Keep width conservative.
-        cw = max(280, min(PHONE_MAX_WIDTH, page_width - (PHONE_SIDE_PAD * 2)))
+        cw = mobile_width(page_width)
     elif page_width < 1100:
         cols = 2
         cw = max(240, (page_width - 70 - gap * (cols - 1)) // cols)
@@ -310,37 +310,24 @@ def make_card_row(items, page_width, cols=4, gap=12):
                         max_lines=1,
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
-                    ctrl
+                    ctrl,
                 ],
                 spacing=4 if mobile else 5,
                 tight=True,
             ),
             bgcolor=SURFACE,
-            padding=ft.padding.all(12 if mobile else 18),
+            padding=ft.padding.symmetric(horizontal=14, vertical=12) if mobile else ft.padding.all(18),
             border_radius=10,
             border=ft.border.all(1, BORDER),
             width=cw,
         ))
+
         if len(row) == cols:
-            card_rows.append(
-                ft.Row(
-                    row[:],
-                    spacing=gap,
-                    wrap=False,
-                    scroll=ft.ScrollMode.AUTO if mobile and cols > 1 else None,
-                )
-            )
+            card_rows.append(ft.Row(row[:], spacing=gap, wrap=False))
             row = []
 
     if row:
-        card_rows.append(
-            ft.Row(
-                row,
-                spacing=gap,
-                wrap=False,
-                scroll=ft.ScrollMode.AUTO if mobile and cols > 1 else None,
-            )
-        )
+        card_rows.append(ft.Row(row, spacing=gap, wrap=False))
 
     return ft.Column(card_rows, spacing=gap)
 
@@ -377,7 +364,7 @@ def main(page: ft.Page):
         left=PHONE_SIDE_PAD if is_mobile_width(page.width or 380) else 28,
         right=PHONE_SIDE_PAD if is_mobile_width(page.width or 380) else 28,
         top=PHONE_TOP_SAFE if is_mobile_width(page.width or 380) else 24,
-        bottom=16,
+        bottom=18,
     )
     page.scroll = ft.ScrollMode.AUTO
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
@@ -422,9 +409,9 @@ def main(page: ft.Page):
     # ══════════════════════════════════════════════════════════════════════════
     # Use ICO_* string constants for icon that gets .name reassigned later
     cl_ic   = ft.Icon(ICO_CLOUD_OK,  color=GREEN, size=16)
-    cl_st   = ft.Text("Connecting to Firebase…", size=12 if is_mobile() else 13, color=MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+    cl_st   = ft.Text("Connecting to Firebase…", size=11 if is_mobile() else 13, color=MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
     db_lbl  = ft.Text("0 readings",              size=11 if is_mobile() else 12, color=MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-    ml_lbl  = ft.Text("Cloud ML: connecting…",   size=11 if is_mobile() else 12, color=MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+    ml_lbl  = ft.Text("Cloud ML: connecting…",   size=10 if is_mobile() else 12, color=MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
     off_pill = ft.Container(
         content=ft.Text("OFFLINE — cached", size=11, color=AMBER),
         bgcolor="#2a2210",
@@ -435,7 +422,7 @@ def main(page: ft.Page):
     )
 
     banner = ft.Container(
-        width=min(PHONE_MAX_WIDTH, pw() - PHONE_SIDE_PAD * 2) if is_mobile() else None,
+        width=mobile_width(pw()) if is_mobile() else None,
         content=ft.Column([
             ft.Row([cl_ic, cl_st, ft.Container(expand=True), off_pill], spacing=6),
             ft.Row([
@@ -448,8 +435,8 @@ def main(page: ft.Page):
         ], spacing=6),
         bgcolor=SURF2,
         padding=ft.padding.symmetric(
-            horizontal=10 if is_mobile() else 18,
-            vertical=10 if is_mobile() else 14
+            horizontal=12 if is_mobile() else 18,
+            vertical=12 if is_mobile() else 14
         ),
         border_radius=8,
         border=ft.border.all(1, GREEN + "44"),
@@ -501,7 +488,7 @@ def main(page: ft.Page):
     ai_spin = ft.ProgressBar(color=BLUE, bgcolor=SURF2, value=0, visible=False)
 
     ai_card = ft.Container(
-        width=min(PHONE_MAX_WIDTH, pw() - PHONE_SIDE_PAD * 2) if is_mobile() else None,
+        width=mobile_width(pw()) if is_mobile() else None,
         content=ft.Column(
             [ai_lbl, ai_main, ai_feed, ai_watr, ai_date, ai_trnd, ai_spin],
             spacing=5, tight=True),
@@ -534,7 +521,7 @@ def main(page: ft.Page):
     al_ic = ft.Icon(ICO_WIFI_FIND, color=MUTED, size=18)
     al_mg = ft.Text("Waiting for ESP32 data in Firebase…", size=12 if is_mobile() else 13, color=MUTED, max_lines=3, overflow=ft.TextOverflow.ELLIPSIS)
     al_bx = ft.Container(
-        width=min(PHONE_MAX_WIDTH, pw() - PHONE_SIDE_PAD * 2) if is_mobile() else None,
+        width=mobile_width(pw()) if is_mobile() else None,
         content=ft.Row([al_ic, al_mg], spacing=8),
         bgcolor=SURF2, padding=ft.padding.all(13),
         border_radius=6, border=ft.border.all(1, BORDER),
@@ -647,8 +634,8 @@ def main(page: ft.Page):
 
         ft.Container(
             content=db_col,
-            width=min(PHONE_MAX_WIDTH, pw() - PHONE_SIDE_PAD * 2) if is_mobile() else None,
-            height=260 if is_mobile() else 320,
+            width=mobile_width(pw()) if is_mobile() else None,
+            height=CHART_PHONE_HEIGHT if is_mobile() else CHART_DESKTOP_HEIGHT,
             border_radius=8,
             border=ft.border.all(1, BORDER),
             bgcolor=SURF2,
@@ -692,6 +679,32 @@ def main(page: ft.Page):
     )
     pred_ctr = ft.Container()
     conf_col = ft.Column([], visible=False)
+
+    sched_title = ft.Text(
+        "Next Scheduled Feed",
+        size=13 if is_mobile() else 14,
+        color=MUTED,
+        weight=ft.FontWeight.W_600,
+    )
+    sched_main = ft.Text("--", size=22 if is_mobile() else 26, weight=ft.FontWeight.W_600, color=GREEN)
+    sched_sub = ft.Text("", size=11 if is_mobile() else 12, color=MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+    sched_table_wrap = ft.Container(visible=False)
+
+    sched_card = ft.Container(
+        width=mobile_width(pw()) if is_mobile() else None,
+        content=ft.Column([
+            ft.Row([ft.Icon(ICO_CALENDAR, size=15, color=GREEN), sched_title], spacing=6),
+            sched_main,
+            sched_sub,
+            sched_table_wrap,
+        ], spacing=6, tight=True),
+        bgcolor=SURFACE,
+        padding=ft.padding.all(12 if is_mobile() else 16),
+        border_radius=10,
+        border=ft.border.all(1, GREEN + "44"),
+        visible=False,
+    )
+
     pd_bx    = ft.Container(
         content=ft.Row([ft.Icon(ICO_CALENDAR, size=15, color=BLUE), pd_txt], spacing=8),
         bgcolor="#162133", padding=ft.padding.all(13), border_radius=6,
@@ -711,7 +724,7 @@ def main(page: ft.Page):
             "AI Predictions",
             "Cloud ML results" if is_mobile() else "Computed by cloud ML — updated continuously"
         ),
-        ai_sb, pred_ctr, pd_bx, conf_col,
+        ai_sb, pred_ctr, pd_bx, sched_card, conf_col,
     ], spacing=13, visible=False)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -748,8 +761,8 @@ def main(page: ft.Page):
         src_base64="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0d8AAAAASUVORK5CYII=",
         fit="contain",
         border_radius=8,
-        height=210 if is_mobile() else 360,
-        width=min(PHONE_MAX_WIDTH - 20, pw() - 30) if is_mobile() else None,
+        height=CHART_PHONE_HEIGHT if is_mobile() else CHART_DESKTOP_HEIGHT,
+        width=mobile_width(pw()) - 8 if is_mobile() else None,
     )
 
     chart_cap = ft.Text(
@@ -770,13 +783,13 @@ def main(page: ft.Page):
             ft.Column([
                 ft.Text(
                     "Consumption Trends",
-                    size=16 if is_mobile() else 20,
+                    size=18 if is_mobile() else 20,
                     weight=ft.FontWeight.W_600,
                     color=TEXT,
                 ),
                 ft.Text(
-                    "Feed vs Water",
-                    size=10 if is_mobile() else 12,
+                    "Feed vs Water — larger mobile chart",
+                    size=11 if is_mobile() else 12,
                     color=MUTED,
                 ),
             ], spacing=0, tight=True),
@@ -786,7 +799,7 @@ def main(page: ft.Page):
         chart_cap,
 
         ft.Container(
-            width=min(PHONE_MAX_WIDTH, pw() - PHONE_SIDE_PAD * 2) if is_mobile() else None,
+            width=mobile_width(pw()) if is_mobile() else None,
             content=ft.Column(
                 [
                     chart_img,
@@ -803,8 +816,8 @@ def main(page: ft.Page):
             border_radius=10,
             border=ft.border.all(1, BORDER),
             padding=ft.padding.symmetric(
-                horizontal=2 if is_mobile() else 12,
-                vertical=4 if is_mobile() else 12,
+                horizontal=4 if is_mobile() else 12,
+                vertical=8 if is_mobile() else 12,
             ),
             alignment=ft.alignment.center,
         ),
@@ -991,6 +1004,11 @@ def main(page: ft.Page):
                     af   = ml.get("arimaFeed",        None)
                     aw_  = ml.get("arimaWater",       None)
                     ta   = str(ml.get("trainedAt",    ""))
+                    feed_schedule = ml.get("feedSchedule", []) or []
+                    next_feed_time = str(ml.get("nextFeedTime", ""))
+                    next_feed_date = str(ml.get("nextFeedDate", ""))
+                    next_feed_kg = safe_float(ml.get("nextFeedKg", 0.0))
+                    next_feed_water = safe_float(ml.get("nextFeedWaterL", 0.0))
 
                     # AI card in sensor section
                     ai_spin.visible = False
@@ -1040,6 +1058,28 @@ def main(page: ft.Page):
                     ai_sb.bgcolor = "#1a2e1a"
                     ai_sb.border  = ft.border.all(1, GREEN + "44")
                     rebuild_pred()
+
+                    # Scheduled feed prediction section
+                    if feed_schedule:
+                        sched_main.value = f"{next_feed_kg:.2f} kg"
+                        sched_sub.value = f"{next_feed_date} at {next_feed_time}  •  Water: {next_feed_water:.2f} L"
+                        try:
+                            sched_rows = []
+                            for sr in feed_schedule[:4]:
+                                sched_rows.append({
+                                    "date": str(sr.get("date", "")),
+                                    "time": str(sr.get("time", "")),
+                                    "feed_kg": safe_float(sr.get("feed_kg", 0)),
+                                    "water_L": safe_float(sr.get("water_liters", 0)),
+                                })
+                            sched_table_wrap.content = ft.Row([mk_table_list(sched_rows)], scroll=ft.ScrollMode.AUTO)
+                            sched_table_wrap.visible = True
+                        except Exception:
+                            sched_table_wrap.visible = False
+                        sched_card.visible = True
+                    else:
+                        sched_card.visible = False
+
                     ai_pred_sec.visible = True
 
                     # Farm insights
@@ -1066,6 +1106,10 @@ def main(page: ft.Page):
                     ai_main.color   = MUTED
                     ai_feed.value = ai_watr.value = ai_date.value = ""
                     ai_trnd.visible = False
+                    try:
+                        sched_card.visible = False
+                    except Exception:
+                        pass
 
                 # Banner DB count
                 try:
