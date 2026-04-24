@@ -289,9 +289,10 @@ def render_chart_b64(df: pd.DataFrame, forecast_rows: list = None) -> str:
 
         return base64.b64encode(buf.getvalue()).decode()
 
+
     except Exception as e:
         print(f"[CHART] error: {e}")
-        return ""
+        return None
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN TRAINING FUNCTION
 # ═════════════════════════════════════════════════════════════════════════════
@@ -371,21 +372,43 @@ def train_once():
         feed_v = round(float(m_feed.predict(inp)[0]),  3)
         water_v= round(float(m_water.predict(inp)[0]), 3)
 
-        # ── 5. ARIMA ──────────────────────────────────────────────────────────
+        # ── 5. ARIMA (stable version)
         arima_feed = arima_water = None
+
         if HAS_ARIMA and total_rows >= 30:
             try:
                 from statsmodels.tsa.arima.model import ARIMA
-                af = ARIMA(df["feed_kg"].values,      order=(2, 1, 2)).fit()
-                aw = ARIMA(df["water_liters"].values, order=(2, 1, 2)).fit()
-                arima_feed  = round(float(af.forecast(1)[0]),  3)
-                arima_water = round(float(aw.forecast(1)[0]),  3)
+
+                # Feed model (lighter)
+                af = ARIMA(
+                    df["feed_kg"].values,
+                    order=(1, 1, 1),
+                    enforce_stationarity=False,
+                    enforce_invertibility=False
+                ).fit()
+
+                arima_feed = round(float(af.forecast(1)[0]), 3)
+
+                # Water model check if mostly same values
+                if df["water_liters"].nunique() <= 2:
+                    arima_water = round(float(df["water_liters"].mean()), 3)
+                else:
+                    aw = ARIMA(
+                        df["water_liters"].values,
+                        order=(1, 1, 0),
+                        enforce_stationarity=False,
+                        enforce_invertibility=False
+                    ).fit()
+
+                    arima_water = round(float(aw.forecast(1)[0]), 3)
+
             except Exception as e:
                 print(f"[ML] ARIMA skipped: {e}")
-                arima_feed  = feed_v
+                arima_feed = feed_v
                 arima_water = water_v
+
         else:
-            arima_feed  = feed_v
+            arima_feed = feed_v
             arima_water = water_v
 
         # ── 6. Confidence / trend / anomaly ───────────────────────────────────
