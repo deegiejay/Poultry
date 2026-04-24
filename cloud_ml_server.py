@@ -65,6 +65,8 @@ RETRAIN_EVERY  = 50     # retrain when N new rows arrive
 MIN_ROWS       = 20     # minimum rows before first train
 ROLLING_WINDOW = 1000   # use last N rows
 TRAIN_INTERVAL = 120    # retrain every N seconds even without new rows
+STARTUP_TRAIN_DELAY = 5
+FEED_SCHEDULE_HOURS = [3, 8, 11, 14]  # feeding schedule: 3AM, 8AM, 11AM, 2PM
 ANOMALY_Z      = 2.5    # Z-score threshold for anomaly detection
 
 BG      = "#0e1117"
@@ -184,6 +186,77 @@ def build_predict_row(last_row: pd.Series, next_date: pd.Timestamp,
         "lag1_water":   float(last_row["water_liters"]),
         "roll3_feed":   float(recent_df["feed_kg"].tail(3).mean()),
     }])
+
+def _schedule_label(dt: pd.Timestamp) -> str:
+    """Human-readable feeding schedule label."""
+    try:
+        return dt.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return str(dt)
+
+
+def build_schedule_predictions(last_row: pd.Series, recent_df: pd.DataFrame,
+                               m_feed, m_water, count: int = 4) -> list:
+    """
+    Predict feed/water for the next scheduled feeding times.
+    Schedule: 3AM, 8AM, 11AM, 2PM.
+    Uses the same trained ML models as the normal AI prediction,
+    but sets the prediction hour to the upcoming schedule slot.
+    """
+    rows = []
+    try:
+        base_dt = pd.to_datetime(last_row["date"])
+        candidates = []
+
+        # Build enough future schedule slots.
+        for day_add in range(0, 4):
+            day = (base_dt + timedelta(days=day_add)).normalize()
+            for hr in FEED_SCHEDULE_HOURS:
+                slot = day + timedelta(hours=hr)
+                if slot > base_dt:
+                    candidates.append(slot)
+
+        candidates = candidates[:count]
+
+        tmp = recent_df.copy()
+        for slot in candidates:
+            xi = build_predict_row(tmp.iloc[-1], slot, tmp)
+            xi["hour"] = int(slot.hour)
+            xi["day_of_week"] = int(slot.weekday())
+            xi["month"] = int(slot.month)
+
+            fv = max(0.0, float(m_feed.predict(xi)[0]))
+            wv = max(0.0, float(m_water.predict(xi)[0]))
+
+            rows.append({
+                "date": str(slot.date()),
+                "time": _schedule_label(slot),
+                "hour": int(slot.hour),
+                "feed_kg": round(fv, 4),
+                "water_liters": round(wv, 4),
+            })
+
+            # Use prediction as next lag context.
+            new_row = pd.DataFrame([{
+                "date": slot,
+                "feed_kg": fv,
+                "water_liters": wv,
+                "system": int(last_row.get("system", 1)),
+                "day_of_week": int(slot.weekday()),
+                "month": int(slot.month),
+                "hour": int(slot.hour),
+                "lag1_feed": float(tmp.iloc[-1]["feed_kg"]),
+                "lag1_water": float(tmp.iloc[-1]["water_liters"]),
+                "roll3_feed": float(tmp["feed_kg"].tail(3).mean()),
+                "flow": 0.0,
+                "level": "0%",
+            }])
+            tmp = pd.concat([tmp, new_row], ignore_index=True)
+
+    except Exception as e:
+        print(f"[ML] schedule prediction skipped: {e}")
+
+    return rows
 
 def render_chart_b64(df: pd.DataFrame, forecast_rows: list = None) -> str:
     """
@@ -447,7 +520,11 @@ def train_once():
             }])
             tmp = pd.concat([tmp, new_row], ignore_index=True)
 
-        # ── 8. Patterns ───────────────────────────────────────────────────────
+        # ── 8. Scheduled feeding prediction ─────────────────────────────────
+        schedule_rows = build_schedule_predictions(last, df, m_feed, m_water, count=4)
+        next_sched = schedule_rows[0] if schedule_rows else {}
+
+        # ── 9. Patterns ───────────────────────────────────────────────────────
         try:
             pat_sys   = df.groupby("system")[["feed_kg","water_liters"]].mean().to_dict()
             pat_day   = df.groupby("day_of_week")[["feed_kg","water_liters"]].mean().to_dict()
@@ -478,6 +555,13 @@ def train_once():
             "patDay":     pat_day,
             "patMonth":   pat_month,
             "chartB64":   chart_b64,
+
+            # Scheduled feeding prediction
+            "feedSchedule": schedule_rows,
+            "nextFeedTime": next_sched.get("time", ""),
+            "nextFeedDate": next_sched.get("date", ""),
+            "nextFeedKg": next_sched.get("feed_kg", 0.0),
+            "nextFeedWaterL": next_sched.get("water_liters", 0.0),
         }
 
         ok1 = db.write_ml_result(ml_result)
@@ -511,6 +595,15 @@ def train_once():
 # ═════════════════════════════════════════════════════════════════════════════
 # BACKGROUND TRAINING LOOP
 # ═════════════════════════════════════════════════════════════════════════════
+
+def startup_train_once():
+    """Run one delayed training attempt after server boot."""
+    try:
+        time.sleep(STARTUP_TRAIN_DELAY)
+        train_once()
+    except Exception:
+        print(traceback.format_exc())
+
 
 def training_loop():
     last_trained_rows = 0
@@ -590,8 +683,9 @@ if __name__ == "__main__":
     print(f"  Min rows : {MIN_ROWS}")
     print("=" * 60)
 
-    # Start training background thread
+    # Start training background threads
     threading.Thread(target=training_loop, daemon=True).start()
+    threading.Thread(target=startup_train_once, daemon=True).start()
 
     # Render injects PORT env var; default 8000 for local testing
     port = int(os.getenv("PORT", 8000))
